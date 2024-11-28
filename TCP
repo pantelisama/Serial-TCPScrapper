@@ -1,0 +1,218 @@
+import tkinter as tk
+from tkinter import ttk, filedialog
+import socket
+import threading
+import time
+import re
+from datetime import datetime
+
+
+class TCPClientApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("TCP Client Terminal")
+        self.root.geometry("600x750")  # Increased window size to fit new textbox
+
+        # TCP connection variables
+        self.socket_connection = None
+        self.is_running = False
+        self.current_height = ""  # Store the latest height value
+
+        # Server IP and Port Entry for TCP
+        self.ip_label = ttk.Label(root, text="Server IP (TCP):")
+        self.ip_label.grid(row=0, column=0, padx=5, pady=5)
+
+        self.ip_entry = ttk.Entry(root, width=30)
+        self.ip_entry.insert(0, "192.1.0.41")  # Default IP
+        self.ip_entry.grid(row=0, column=1, padx=5, pady=5)
+
+        self.port_label = ttk.Label(root, text="Port (TCP):")
+        self.port_label.grid(row=1, column=0, padx=5, pady=5)
+
+        self.port_entry = ttk.Entry(root, width=30)
+        self.port_entry.insert(0, "30301")  # Default Port
+        self.port_entry.grid(row=1, column=1, padx=5, pady=5)
+
+        # Connection Buttons
+        self.connect_tcp_button = ttk.Button(root, text="Connect to TCP", command=self.connect_to_tcp_server)
+        self.connect_tcp_button.grid(row=2, column=0, padx=5, pady=5)
+
+        self.disconnect_button = ttk.Button(root, text="Disconnect", command=self.disconnect, state="disabled")
+        self.disconnect_button.grid(row=2, column=1, padx=5, pady=5)
+
+        # Client Monitor (TCP Data)
+        self.client_monitor_label = ttk.Label(root, text="Client Monitor:")
+        self.client_monitor_label.grid(row=3, column=0, padx=5, pady=5)
+
+        self.client_monitor = tk.Text(root, height=10, width=70,
+                                      wrap=tk.WORD)  # Client monitor to display received data
+        self.client_monitor.grid(row=4, column=0, columnspan=2, padx=5, pady=5)
+        self.client_monitor.config(state=tk.DISABLED)
+
+        # Interpolated Height Label and Text Box
+        self.interpolated_height_label = ttk.Label(root, text="Interpolated Height:")
+        self.interpolated_height_label.grid(row=5, column=0, padx=5, pady=5)
+
+        self.interpolated_height_text = ttk.Entry(root, width=30)
+        self.interpolated_height_text.grid(row=5, column=1, padx=5, pady=5)
+
+        # New Textbox for timestamp and interpolated height
+        self.timestamp_height_label = ttk.Label(root, text="Timestamp,Interpolated Height:")
+        self.timestamp_height_label.grid(row=6, column=0, padx=5, pady=5)
+
+        self.timestamp_height_text = tk.Text(root, height=5, width=70)  # New text box for the timestamp and height
+        self.timestamp_height_text.grid(row=7, column=0, columnspan=2, padx=5, pady=5)
+        self.timestamp_height_text.config(state=tk.DISABLED)
+
+        # Export Button to save the timestamp and height data
+        self.export_button = ttk.Button(root, text="Export to Text", command=self.export_to_text)
+        self.export_button.grid(row=8, column=0, columnspan=2, padx=5, pady=5)
+
+        # Handle window close event
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        # Periodic update every 1 second
+        self.root.after(1000, self.update_timestamp_height)
+
+    def connect_to_tcp_server(self):
+        """ Connect to the TCP server. """
+        ip_address = self.ip_entry.get()
+        port = int(self.port_entry.get())
+
+        if not ip_address or not port:
+            self.client_monitor.config(state=tk.NORMAL)
+            self.client_monitor.insert(tk.END, "Error: Invalid IP or Port.\n")
+            self.client_monitor.config(state=tk.DISABLED)
+            return
+
+        self.socket_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        try:
+            self.socket_connection.connect((ip_address, port))
+            self.client_monitor.config(state=tk.NORMAL)
+            self.client_monitor.insert(tk.END, f"Connected to {ip_address} at port {port}.\n")
+            self.client_monitor.config(state=tk.DISABLED)
+
+            self.is_running = True
+            self.connect_tcp_button.config(state=tk.DISABLED)
+            self.disconnect_button.config(state=tk.NORMAL)
+
+            # Start TCP read thread
+            self.read_thread = threading.Thread(target=self.read_from_tcp, daemon=True)
+            self.read_thread.start()
+
+            # Send the sequence of commands after TCP connection is established
+            self.send_initial_commands()
+
+        except Exception as e:
+            self.client_monitor.config(state=tk.NORMAL)
+            self.client_monitor.insert(tk.END, f"Error connecting to server: {e}\n")
+            self.client_monitor.config(state=tk.DISABLED)
+
+    def disconnect(self):
+        """ Disconnect from the TCP server. """
+        self.is_running = False
+        if self.socket_connection:
+            self.socket_connection.close()
+
+        self.connect_tcp_button.config(state=tk.NORMAL)
+        self.disconnect_button.config(state=tk.DISABLED)
+
+    def send_initial_commands(self):
+        """ Send the required sequence of commands once connected. """
+        if self.socket_connection:
+            # Initial sequence of commands
+            commands = ['5', '\r', '\x1b', 'mc', '\x1b', '\r', 'R', '\r', 'M', '\r', 'A', '\r']
+            for command in commands:
+                self.socket_connection.sendall(command.encode())
+                time.sleep(0.5)  # Increased delay to 0.5 seconds between commands
+
+            # Send '6' followed by 'enter', then 'a' followed by 'enter'
+            self.socket_connection.sendall('6'.encode())  # Send '6'
+            self.socket_connection.sendall('\r'.encode())  # Send 'enter' (carriage return)
+            time.sleep(0.5)
+
+            self.socket_connection.sendall('a'.encode())  # Send 'a'
+            self.socket_connection.sendall('\r'.encode())  # Send 'enter' (carriage return)
+            time.sleep(0.5)
+
+            # Display that the initial commands were sent
+            self.client_monitor.config(state=tk.NORMAL)
+            self.client_monitor.insert(tk.END, "Initial commands and additional '6' and 'a' with enters sent.\n")
+            self.client_monitor.config(state=tk.DISABLED)
+
+    def display_received_data(self, data):
+        """ Display received data in the correct monitor. """
+        self.client_monitor.config(state=tk.NORMAL)
+        self.client_monitor.insert(tk.END, data)
+        self.client_monitor.yview(tk.END)  # Scroll to the bottom automatically
+        self.client_monitor.config(state=tk.DISABLED)
+
+    def extract_and_display_height(self, data):
+        """ Extract height value from the received data and display it in the Interpolated Height box. """
+        match = re.search(r'H=(\d+)', data)
+        if match:
+            raw_height = match.group(1)
+            self.current_height = raw_height  # Store the current height value
+
+            # Update the Interpolated Height text box with the raw height
+            self.interpolated_height_text.delete(0, tk.END)
+            self.interpolated_height_text.insert(tk.END, raw_height)
+
+    def display_timestamp_and_height(self, timestamp, height):
+        """ Display timestamp and interpolated height in the new textbox. """
+        self.timestamp_height_text.config(state=tk.NORMAL)
+        self.timestamp_height_text.insert(tk.END, f"{timestamp},{height}\n")
+        self.timestamp_height_text.yview(tk.END)  # Scroll to the bottom automatically
+        self.timestamp_height_text.config(state=tk.DISABLED)
+
+    def update_timestamp_height(self):
+        """ Periodically update the timestamp and interpolated height every 1 second. """
+        if self.current_height:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            self.display_timestamp_and_height(timestamp, self.current_height)
+
+        # Call this method again after 1 second (1000 ms)
+        self.root.after(1000, self.update_timestamp_height)
+
+    def read_from_tcp(self):
+        """ Continuously read data from the TCP connection. """
+        while self.is_running:
+            try:
+                data = self.socket_connection.recv(1024).decode('utf-8', errors='ignore')
+                if data:
+                    self.display_received_data(data)
+                    self.extract_and_display_height(data)
+            except Exception as e:
+                self.client_monitor.config(state=tk.NORMAL)
+                self.client_monitor.insert(tk.END, f"Error reading from TCP: {e}\n")
+                self.client_monitor.config(state=tk.DISABLED)
+            time.sleep(0.1)
+
+    def on_closing(self):
+        """ Handle window close event. """
+        self.is_running = False
+        self.root.quit()
+
+    def export_to_text(self):
+        """ Export timestamp and interpolated height data to a text file. """
+        # Open file dialog to choose location and filename
+        file_path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text Files", "*.txt")])
+
+        if not file_path:
+            return  # If no file was chosen, do nothing
+
+        # Open the selected file in write mode
+        with open(file_path, 'w') as file:
+            # Retrieve all text in the timestamp-height textbox and write it to the file
+            data = self.timestamp_height_text.get(1.0, tk.END)
+            file.write(data)  # Write the content of the textbox into the file
+            self.client_monitor.config(state=tk.NORMAL)
+            self.client_monitor.insert(tk.END, f"Data exported to {file_path}\n")
+            self.client_monitor.config(state=tk.DISABLED)
+
+
+# Create and run the app
+root = tk.Tk()
+app = TCPClientApp(root)
+root.mainloop()
