@@ -1,0 +1,199 @@
+import tkinter as tk
+from tkinter import ttk, filedialog
+import serial
+import threading
+import time
+import re
+
+class SerialMonitorApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Serial Monitor")
+        self.root.geometry("600x450")
+
+        # Serial connection variable
+        self.serial_connection = None
+        self.is_running = False
+
+        # Connect button
+        self.connect_button = ttk.Button(root, text="Connect", command=self.connect_serial)
+        self.connect_button.grid(row=0, column=0, padx=5, pady=5)
+
+        # Disconnect button
+        self.disconnect_button = ttk.Button(root, text="Disconnect", command=self.disconnect_serial, state=tk.DISABLED)
+        self.disconnect_button.grid(row=0, column=1, padx=5, pady=5)
+
+        # Command entry box
+        self.command_entry = ttk.Entry(root, width=50)
+        self.command_entry.grid(row=1, column=0, padx=5, pady=5)
+        self.command_entry.bind("<Return>", self.send_command)  # Bind ENTER to send the command
+
+        # Serial Monitor Textbox
+        self.serial_monitor_label = ttk.Label(root, text="Serial Monitor:")
+        self.serial_monitor_label.grid(row=2, column=0, padx=5, pady=5)
+
+        self.serial_monitor = tk.Text(root, height=10, width=70, wrap=tk.WORD)  # Serial monitor for serial data
+        self.serial_monitor.grid(row=3, column=0, columnspan=2, padx=5, pady=5)
+        self.serial_monitor.config(state=tk.DISABLED)
+
+        # Raw Height Textbox
+        self.raw_height_label = ttk.Label(root, text="Raw Height:")
+        self.raw_height_label.grid(row=4, column=0, padx=5, pady=5)
+
+        self.raw_height_value_text = ttk.Entry(root, width=30)
+        self.raw_height_value_text.grid(row=4, column=1, padx=5, pady=5)
+
+        # New Textbox for Timestamp and Raw Height
+        self.timestamp_label = ttk.Label(root, text="Timestamp & Raw Height:")
+        self.timestamp_label.grid(row=5, column=0, padx=5, pady=5)
+
+        self.timestamp_textbox = tk.Text(root, height=5, width=70)
+        self.timestamp_textbox.grid(row=6, column=0, columnspan=2, padx=5, pady=5)
+        self.timestamp_textbox.config(state=tk.DISABLED)
+
+        # Export Button
+        self.export_button = ttk.Button(root, text="Export to TXT", command=self.export_to_txt)
+        self.export_button.grid(row=7, column=0, columnspan=2, pady=5)
+
+    def connect_serial(self):
+        """ Establish a serial connection. """
+        try:
+            # Open serial connection with COM7, baud rate 115200, and Odd parity
+            self.serial_connection = serial.Serial('COM7', 115200, parity=serial.PARITY_ODD, timeout=1)
+            if self.serial_connection.is_open:
+                self.is_running = True
+                self.connect_button.config(state=tk.DISABLED)  # Disable the connect button after connection
+                self.disconnect_button.config(state=tk.NORMAL)  # Enable the disconnect button
+                self.serial_monitor.config(state=tk.NORMAL)
+                self.serial_monitor.insert(tk.END, "Connected to COM7 at 115200 baud with Odd parity.\n")
+                self.serial_monitor.config(state=tk.DISABLED)
+
+                # Start the read thread
+                self.read_thread = threading.Thread(target=self.read_from_serial, daemon=True)
+                self.read_thread.start()
+
+                # Send the initial commands (M, 8, 3, R)
+                self.send_initial_commands()
+
+                # Start the thread to send R every 1 second
+                self.send_r_thread = threading.Thread(target=self.send_r_periodically, daemon=True)
+                self.send_r_thread.start()
+
+        except Exception as e:
+            self.serial_monitor.config(state=tk.NORMAL)
+            self.serial_monitor.insert(tk.END, f"Error connecting to serial port: {e}\n")
+            self.serial_monitor.config(state=tk.DISABLED)
+
+    def read_from_serial(self):
+        """ Read data from the serial port and display it in the monitor. """
+        while self.is_running:
+            try:
+                data = self.serial_connection.readline().decode('utf-8').strip()  # Read data from serial port
+                if data:
+                    self.display_received_data(data)  # Display data in the serial monitor
+                    self.extract_height_from_data(data)  # Extract and display height value
+            except Exception as e:
+                if self.is_running:
+                    self.serial_monitor.config(state=tk.NORMAL)
+                    self.serial_monitor.insert(tk.END, f"Error reading serial data: {e}\n")
+                    self.serial_monitor.config(state=tk.DISABLED)
+                break
+
+    def display_received_data(self, data):
+        """ Display the received serial data in the monitor. """
+        self.serial_monitor.config(state=tk.NORMAL)
+        self.serial_monitor.insert(tk.END, f"Received: {data}\n")
+        self.serial_monitor.yview(tk.END)  # Scroll to the end
+        self.serial_monitor.config(state=tk.DISABLED)
+
+    def send_command(self, event=None):
+        """ Send the command entered in the command box to the serial port. """
+        command = self.command_entry.get().strip()
+        if command and self.serial_connection and self.serial_connection.is_open:
+            self.serial_connection.write(command.encode() + b'\r')  # Send the command with ENTER
+            self.serial_monitor.config(state=tk.NORMAL)
+            self.serial_monitor.insert(tk.END, f"Sent: {command}\n")
+            self.serial_monitor.config(state=tk.DISABLED)
+            self.command_entry.delete(0, tk.END)  # Clear the command box after sending
+
+    def send_initial_commands(self):
+        """ Send the initial set of commands (M, 8, 3, R). """
+        if self.serial_connection and self.serial_connection.is_open:
+            initial_commands = ['M', '8', '3', 'R']
+            for command in initial_commands:
+                self.serial_connection.write(command.encode() + b'\r')  # Send each command with ENTER
+                time.sleep(1)  # Add a 1-second delay between sending commands
+                self.serial_monitor.config(state=tk.NORMAL)
+                self.serial_monitor.insert(tk.END, f"Sent: {command}\n")
+                self.serial_monitor.config(state=tk.DISABLED)
+
+    def send_r_periodically(self):
+        """ Continuously send R every 1 second. """
+        while self.is_running:
+            if self.serial_connection and self.serial_connection.is_open:
+                self.serial_connection.write(b'R\r')  # Send 'R' with ENTER
+                self.serial_monitor.config(state=tk.NORMAL)
+                self.serial_monitor.insert(tk.END, "Sent: R\n")
+                self.serial_monitor.config(state=tk.DISABLED)
+                time.sleep(1)  # Wait for 1 second before sending again
+
+    def extract_height_from_data(self, data):
+        """ Extract the height value from the serial data. """
+        # Regex to find the height value (assuming data contains "HEIGHT: <number>")
+        match = re.search(r"HEIGHT:\s*(\d+)", data)
+        if match:
+            height_value = match.group(1)  # Extract the numeric value of height
+            self.raw_height_value_text.delete(0, tk.END)  # Clear previous value
+            self.raw_height_value_text.insert(tk.END, height_value)  # Display new height value
+
+            # Get the current timestamp
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            # Print timestamp and raw height in the new textbox
+            self.timestamp_textbox.config(state=tk.NORMAL)
+            self.timestamp_textbox.insert(tk.END, f"{timestamp},{height_value}\n")
+            self.timestamp_textbox.config(state=tk.DISABLED)
+
+    def disconnect_serial(self):
+        """ Disconnect the serial connection gracefully. """
+        self.is_running = False
+        if self.serial_connection and self.serial_connection.is_open:
+            self.serial_connection.close()
+            self.serial_monitor.config(state=tk.NORMAL)
+            self.serial_monitor.insert(tk.END, "Disconnected from serial port.\n")
+            self.serial_monitor.config(state=tk.DISABLED)
+        self.connect_button.config(state=tk.NORMAL)  # Enable the connect button
+        self.disconnect_button.config(state=tk.DISABLED)  # Disable the disconnect button
+
+    def on_closing(self):
+        """ Handle window closing event. """
+        self.is_running = False
+        if self.serial_connection and self.serial_connection.is_open:
+            self.serial_connection.close()
+        self.root.quit()
+
+    def export_to_txt(self):
+        """ Export the timestamp and raw height data to a .txt file. """
+        # Open a file dialog to choose the save location
+        file_path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text files", "*.txt")])
+        if file_path:
+            try:
+                with open(file_path, 'w') as f:
+                    # Write the contents of the timestamp textbox to the file
+                    data = self.timestamp_textbox.get(1.0, tk.END).strip()
+                    f.write(data)
+                self.serial_monitor.config(state=tk.NORMAL)
+                self.serial_monitor.insert(tk.END, f"Data exported to {file_path}\n")
+                self.serial_monitor.config(state=tk.DISABLED)
+            except Exception as e:
+                self.serial_monitor.config(state=tk.NORMAL)
+                self.serial_monitor.insert(tk.END, f"Error exporting data: {e}\n")
+                self.serial_monitor.config(state=tk.DISABLED)
+
+# Run the application
+root = tk.Tk()
+app = SerialMonitorApp(root)
+
+# Close window gracefully
+root.protocol("WM_DELETE_WINDOW", app.on_closing)
+
+root.mainloop()
